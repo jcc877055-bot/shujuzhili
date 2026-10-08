@@ -1,0 +1,20 @@
+package com.example.datagov.modules.evidence.application;
+import com.example.datagov.common.*;
+import com.example.datagov.infrastructure.*;import com.example.datagov.infrastructure.idempotency.CommandExecutor;
+import com.example.datagov.modules.audit.application.AuditWriter;import com.example.datagov.modules.workorder.application.WorkorderService;import com.example.datagov.security.PrincipalContext;
+import org.springframework.stereotype.Service;import org.springframework.web.multipart.MultipartFile;import org.springframework.http.*;import org.springframework.transaction.support.*;
+import java.nio.charset.*;import java.util.*;import static com.example.datagov.common.Checks.*;
+@Service public class EvidenceService {
+ private final Db db;private final WorkorderService orders;private final FileStorage files;private final CommandExecutor commands;private final AuditWriter audit;
+ public EvidenceService(Db db,WorkorderService orders,FileStorage files,CommandExecutor commands,AuditWriter audit){this.db=db;this.orders=orders;this.files=files;this.commands=commands;this.audit=audit;}
+ public Object upload(String key,String workOrderId,MultipartFile file){
+  require(file!=null&&!file.isEmpty()&&file.getSize()<=10485760,400,ErrorCode.INVALID_REQUEST,"材料必须非空且不超过10MiB");byte[] bytes;try{bytes=file.getBytes();}catch(java.io.IOException e){throw new BusinessException(ErrorCode.INVALID_REQUEST,400,"材料读取失败");}
+  String name=text(file.getOriginalFilename(),255);require(!name.contains("/")&&!name.contains("\\")&&name.chars().noneMatch(Character::isISOControl),400,ErrorCode.INVALID_REQUEST,"文件名无效");String media;
+  if(name.toLowerCase(Locale.ROOT).endsWith(".txt")){try{StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).decode(java.nio.ByteBuffer.wrap(bytes));}catch(CharacterCodingException e){throw new BusinessException(ErrorCode.UNSUPPORTED_FILE,415,"文本必须为UTF-8");}for(byte b:bytes)require(b!=0,415,ErrorCode.UNSUPPORTED_FILE,"文本含二进制内容");media="text/plain";}
+  else if(name.toLowerCase(Locale.ROOT).endsWith(".pdf")&&bytes.length>=5&&new String(bytes,0,5,StandardCharsets.US_ASCII).equals("%PDF-"))media="application/pdf";
+  else throw new BusinessException(ErrorCode.UNSUPPORTED_FILE,415,"候选材料类型仅支持UTF-8 TXT和PDF");
+  return commands.execute("evidence:upload",key,Map.of("workOrderId",workOrderId,"name",name,"sha256",sha256(bytes)),()->{var w=orders.load(workOrderId,true);require(!"CLOSED".equals(w.get("status")),409,ErrorCode.STATE_CONFLICT,"已关闭工单不能上传");String storage=UUID.randomUUID()+".bin";files.put(storage,bytes);TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization(){@Override public void afterCompletion(int status){if(status!=STATUS_COMMITTED)files.rollback(storage);}});
+   String evidence=db.insert("INSERT INTO evidence_file(org_id,uploaded_by,original_name,storage_key,media_type,size_bytes,sha256,status,work_order_id,created_by) VALUES(?,?,?,?,?,?,?,'READY',?,?)",Db.str(w,"org_id"),PrincipalContext.current().id(),name,storage,media,bytes.length,sha256(bytes),workOrderId,PrincipalContext.current().id());audit.write(Db.str(w,"org_id"),"EVIDENCE_UPLOAD","evidence_file",evidence,null,Map.of("workOrderId",workOrderId,"sha256",sha256(bytes)),"上传材料");return Db.dto(db.one("SELECT id,work_order_id,original_name,media_type,size_bytes,sha256,status FROM evidence_file WHERE id=?",evidence));});
+ }
+ public ResponseEntity<byte[]> download(String evidence){PrincipalContext.current().permission("evidence:read");var f=db.one("SELECT * FROM evidence_file WHERE id=?",id(evidence));require(f.get("work_order_id")!=null&&"READY".equals(f.get("status")),404,ErrorCode.NOT_FOUND,"材料不可见或不存在");orders.load(Db.str(f,"work_order_id"),false);return ResponseEntity.ok().contentType(MediaType.parseMediaType(Db.str(f,"media_type"))).header(HttpHeaders.CONTENT_DISPOSITION,ContentDisposition.attachment().filename(Db.str(f,"original_name"),StandardCharsets.UTF_8).build().toString()).header("X-Content-Type-Options","nosniff").body(files.verified(f));}
+}

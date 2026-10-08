@@ -1,0 +1,4 @@
+# Isolated synthetic environment only. Never enables a permissive authentication bypass.
+spring:
+  application:
+    name: datagov-backend-demo

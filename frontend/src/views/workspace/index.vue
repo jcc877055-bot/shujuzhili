@@ -1,0 +1,4 @@
+<script setup lang="ts">
+// FR-WO-001 / D18-API-004 / TC-WO-001
+import {ref,onMounted} from 'vue';import {get,errorText,type Row} from '../../api/implemented';const rows=ref<Row[]>([]),error=ref('');onMounted(async()=>{try{rows.value=await get<Row[]>('D18-API-004')}catch(e){error.value=errorText(e)}});
+</script><template><section><h2>我的工作台</h2><p>显示授权范围内尚未关闭的工单，最多100条。</p><p class="error" role="alert">{{error}}</p><table><thead><tr><th>工单</th><th>状态</th><th>轮次</th><th>截止时间</th></tr></thead><tbody><tr v-for="w in rows" :key="w.id"><td><RouterLink :to="'/workorders?order='+w.id">{{w.orderNo}}</RouterLink></td><td>{{w.status}}</td><td>{{w.currentRound}}</td><td>{{w.dueAt||'待派发'}}</td></tr></tbody></table><p v-if="!rows.length&&!error">当前没有可见的待办工单。</p></section></template>
